@@ -8,6 +8,8 @@ import logging
 import time
 from typing import Any
 
+from google.protobuf import duration_pb2, timestamp_pb2
+
 from .enums import (
     HotWaterMode,
     LockBoltActor,
@@ -54,13 +56,17 @@ from .protobuf_gen.weave.trait import (
 )
 
 
-def _safe_timestamp_to_seconds(ts: Any, default: int = 0) -> int:
-    """Safely convert a protobuf Timestamp to seconds.
+def _safe_to_seconds(
+    ts: "timestamp_pb2.Timestamp | duration_pb2.Duration",
+    default: int = 0,
+) -> int:
+    """Safely convert a protobuf Timestamp or Duration to seconds.
 
-    The Nest API sometimes returns timestamps with invalid nanos values
-    (e.g. negative nanos). The standard .ToSeconds() validates nanos and
-    raises ValueError when they are out of range. This helper catches that
-    and falls back to reading the raw seconds field directly.
+    The Nest API sometimes returns Timestamp/Duration fields with invalid
+    nanos values (e.g. negative nanos). The standard .ToSeconds() validates
+    that nanos fall within [0, 999999999] and raises ValueError when they
+    don't. This helper catches that and falls back to reading the raw
+    .seconds field directly, discarding only the corrupt sub-second precision.
     """
     try:
         return int(ts.ToSeconds())
@@ -1055,7 +1061,7 @@ class NestParser:
             nest_hvac_pb2.FanControlSettingsTrait.DESCRIPTOR.full_name
         )
         fan_timer_timeout = (
-            _safe_timestamp_to_seconds(fan_trait.timerEnd)
+            _safe_to_seconds(fan_trait.timerEnd)
             if fan_trait and fan_trait.HasField("timerEnd")
             else 0
         )
@@ -1080,7 +1086,7 @@ class NestParser:
                 fan_timer_speed = 3
 
         fan_duration = (
-            _safe_timestamp_to_seconds(fan_trait.timerDuration, default=900)
+            _safe_to_seconds(fan_trait.timerDuration, default=900)
             if fan_trait and fan_trait.HasField("timerDuration")
             else 900
         )
@@ -1213,7 +1219,7 @@ class NestParser:
         if hw_settings_trait:
             if hw_settings_trait.HasField("boostTimerEnd"):
                 hot_water_boost_time_to_end = (
-                    _safe_timestamp_to_seconds(hw_settings_trait.boostTimerEnd)
+                    _safe_to_seconds(hw_settings_trait.boostTimerEnd)
                 )
             if hw_settings_trait.HasField("temperature"):
                 hot_water_temperature = _round_temp(
@@ -1498,7 +1504,7 @@ class NestParser:
             if filter_trait.HasField("filterReplacementNeeded"):
                 filter_replacement_needed = filter_trait.filterReplacementNeeded.value
             if filter_trait.HasField("filterRuntime"):
-                filter_runtime = _safe_timestamp_to_seconds(filter_trait.filterRuntime)
+                filter_runtime = _safe_to_seconds(filter_trait.filterRuntime)
 
         # Hot Water / Heat Link Parsing
         (
@@ -1709,19 +1715,19 @@ class NestParser:
 
         if self_test:
             if self_test.HasField("lastMstEnd"):
-                latest_manual_test_end_utc_secs = _safe_timestamp_to_seconds(self_test.lastMstEnd)
+                latest_manual_test_end_utc_secs = _safe_to_seconds(self_test.lastMstEnd)
             if self_test.HasField("lastAstEnd"):
-                last_audio_self_test_end_utc_secs = _safe_timestamp_to_seconds(
+                last_audio_self_test_end_utc_secs = _safe_to_seconds(
                     self_test.lastAstEnd
                 )
         elif struct_self_test:
             # Fallback to legacy structure trait
             if struct_self_test.HasField("lastMstEndUtcSecs"):
-                latest_manual_test_end_utc_secs = _safe_timestamp_to_seconds(
+                latest_manual_test_end_utc_secs = _safe_to_seconds(
                     struct_self_test.lastMstEndUtcSecs
                 )
             if struct_self_test.HasField("lastAstEndUtcSecs"):
-                last_audio_self_test_end_utc_secs = _safe_timestamp_to_seconds(
+                last_audio_self_test_end_utc_secs = _safe_to_seconds(
                     struct_self_test.lastAstEndUtcSecs
                 )
 
@@ -1834,7 +1840,7 @@ class NestParser:
         )
         if settings and settings.HasField("replaceByDate"):
             replace_by_date = datetime.datetime.fromtimestamp(
-                _safe_timestamp_to_seconds(settings.replaceByDate), datetime.UTC
+                _safe_to_seconds(settings.replaceByDate), datetime.UTC
             ).date()
 
         legacy_info = traits.get(
@@ -2209,7 +2215,7 @@ class NestParser:
         )
 
         if beacon_trait and beacon_trait.HasField("lastBeaconTime"):
-            online = (time.time() - _safe_timestamp_to_seconds(beacon_trait.lastBeaconTime)) < 3600 * 4
+            online = (time.time() - _safe_to_seconds(beacon_trait.lastBeaconTime)) < 3600 * 4
         elif liveness_trait:
             online = (
                 liveness_trait.status
